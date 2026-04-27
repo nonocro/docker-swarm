@@ -1,0 +1,106 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+
+env:
+  REGISTRY: ghcr.io
+  IMAGE_NAME: ${{ github.repository }}
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      - run: npm ci
+      - run: npm test
+
+  build-push:
+    needs: test
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Log in to ghcr.io
+        uses: docker/login-action@v3
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Extract metadata
+        id: meta
+        uses: docker/metadata-action@v5
+        with:
+          images: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}
+          tags: |
+            type=sha,prefix=sha-
+            type=raw,value=latest
+
+      - name: Build and push
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          push: true
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+  deploy:
+    needs: build-push
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup SSH
+        run: |
+          mkdir -p ~/.ssh
+          echo "${{ secrets.SSH_PRIVATE_KEY }}" > ~/.ssh/id_rsa
+          chmod 600 ~/.ssh/id_rsa
+          ssh-keyscan ${{ secrets.SWARM_HOST }} >> ~/.ssh/known_hosts
+
+      - name: Deploy to Swarm via SSH context
+        env:
+          DOCKER_HOST: ssh://deploy@${{ secrets.SWARM_HOST }}
+          IMAGE: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:sha-${{ github.sha }}
+        run: |
+          IMAGE=$IMAGE docker stack deploy \
+            --with-registry-auth \
+            --compose-file docker-stack.yml \
+            swarm
+
+      - name: Wait for rollout and check status
+        env:
+          DOCKER_HOST: ssh://deploy@${{ secrets.SWARM_HOST }}
+        run: |
+          echo "=== Waiting for update to complete ==="
+          timeout 120 sh -c '
+            until docker service inspect --format "{{.UpdateStatus.State}}" swarm_api 2>/dev/null | grep -qE "^(completed|)$"; do
+              STATE=$(docker service inspect --format "{{.UpdateStatus.State}}" swarm_api 2>/dev/null || echo "unknown")
+              echo "Update state: $STATE"
+              [ "$STATE" = "rollback_completed" ] && echo "ROLLBACK triggered - deployment failed" && exit 1
+              sleep 5
+            done
+          '
+          echo "=== Services ==="
+          docker service ls --filter name=swarm
+          echo "=== Tasks ==="
+          docker service ps swarm_api --no-trunc
+
+      - name: Smoke test
+        env:
+          DOCKER_HOST: ssh://deploy@${{ secrets.SWARM_HOST }}
+        run: |
+          curl --fail http://${{ secrets.SWARM_HOST }}:3000/health
