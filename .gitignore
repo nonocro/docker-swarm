@@ -1,3 +1,5 @@
 node_modules
 .env
 .claude
+ci_key
+ci_key.pub
