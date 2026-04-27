@@ -77,8 +77,10 @@ jobs:
           mkdir -p ~/.ssh
           echo "${{ secrets.SSH_PRIVATE_KEY }}" > ~/.ssh/id_rsa
           chmod 600 ~/.ssh/id_rsa
-          ssh-keyscan ${{ secrets.SWARM_HOST }} >> ~/.ssh/known_hosts
-
+          echo "Host ${{ secrets.SWARM_HOST }}" >> ~/.ssh/config 
+          echo "  StrictHostKeyChecking no" >> ~/.ssh/config
+          echo "  UserKnownHostsFile /dev/null" >> ~/.ssh/config
+          
       - name: Deploy to Swarm via SSH context
         env:
           DOCKER_HOST: ssh://deploy@${{ secrets.SWARM_HOST }}
