@@ -82,9 +82,8 @@ jobs:
       - name: Deploy to Swarm via SSH context
         env:
           DOCKER_HOST: ssh://deploy@${{ secrets.SWARM_HOST }}
-          IMAGE: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:sha-${{ github.sha }}
         run: |
-          IMAGE=$IMAGE docker stack deploy \
+          IMAGE=${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:sha-${GITHUB_SHA:0:7} docker stack deploy \
             --with-registry-auth \
             --compose-file docker-stack.yml \
             swarm
